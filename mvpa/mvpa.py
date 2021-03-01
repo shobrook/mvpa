@@ -2,6 +2,7 @@
 from itertools import product
 from functools import partial
 from multiprocessing import Pool as ProcessPool
+from math import atan
 
 # Third Party
 import numpy as np
@@ -76,10 +77,10 @@ def _analyze_sphere(center, sphere, A, B, output_map):
     _A_even, _A_odd = A_even[sphere].flatten(), A_odd[sphere].flatten()
     _B_even, _B_odd = B_even[sphere].flatten(), B_odd[sphere].flatten()
 
-    AA_sim = np.corrcoef(np.vstack((_A_even, _A_odd)))[0, 1]
-    BB_sim = np.corrcoef(np.vstack((_B_even, _B_odd)))[0, 1]
-    AB_sim = np.corrcoef(np.vstack((_A_even, _B_odd)))[0, 1]
-    BA_sim = np.corrcoef(np.vstack((_B_even, _A_odd)))[0, 1]
+    AA_sim = atan(np.corrcoef(np.vstack((_A_even, _A_odd)))[0, 1])
+    BB_sim = atan(np.corrcoef(np.vstack((_B_even, _B_odd)))[0, 1])
+    AB_sim = atan(np.corrcoef(np.vstack((_A_even, _B_odd)))[0, 1])
+    BA_sim = atan(np.corrcoef(np.vstack((_B_even, _A_odd)))[0, 1])
 
     x0, y0, z0 = center
     output_map[x0][y0][z0] = AA_sim + BB_sim - AB_sim - BA_sim
@@ -161,7 +162,7 @@ if __name__ == "__main__":
         mask = compute_epi_mask(mean_img(concat_imgs(fmri_images)))
 
         print("\tRunning searchlight")
-        sig_map = mvpa(condition_A, condition_B, get_data(mask), radius=2, n_jobs=-1)
+        sig_map = mvpa(condition_A, condition_B, get_data(mask), radius=2, n_jobs=1)
 
         print("\tPickling results")
         pickle.dump(mask, open("mask.pkl", "wb"))
