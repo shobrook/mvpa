@@ -1,2 +1,3 @@
 # mvpa
-Correlation-based multivoxel pattern analysis for fMRI data
+
+Multivoxel pattern analysis for fMRI data
