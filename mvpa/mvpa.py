@@ -1,9 +1,48 @@
 # Standard Library
 from itertools import product
+from functools import partial
+from multiprocessing import Pool as ProcessPool
 
 # Third Party
 import numpy as np
 from tqdm import tqdm
+
+
+###########
+# UTILITIES
+###########
+
+
+def concurrent_exec(func, iterable, n_processes=-1):
+    """
+    Executes a function on a list of inputs in parallel.
+
+    Parameters
+    ----------
+    func : callable
+        function to execute
+    iterable : array
+        list of inputs to map the function to
+    n_processes : int or None
+        number of worker processes to use; if -1, then the number returned by
+        os.cpu_count() is used
+
+    Return
+    ------
+    list : function outputs corresponding to each input
+    """
+
+    pool = ProcessPool(processes=None if n_processes == -1 else n_processes)
+    map_of_items = pool.starmap(func, iterable)
+    pool.close()
+    pool.join()
+
+    return map_of_items
+
+
+#########
+# HELPERS
+#########
 
 
 def _create_sphere(x0, y0, z0, radius):
@@ -21,8 +60,6 @@ def _create_sphere(x0, y0, z0, radius):
 
 
 def _extract_spheres(mask, radius):
-    # mask is a boolean array with shape [x, y, z]
-
     centers = product(*[range(radius, ub - radius) for ub in mask.shape])
     for x0, y0, z0 in centers:
         # Skip spheres where the center is outside the brain
@@ -32,7 +69,28 @@ def _extract_spheres(mask, radius):
         yield (x0, y0, z0), _create_sphere(x0, y0, z0, radius)
 
 
-def mvpa(condition_A, condition_B, mask, radius):
+def _analyze_sphere(center, sphere, A, B, output_map):
+    A_even, A_odd = A
+    B_even, B_odd = B
+
+    _A_even, _A_odd = A_even[sphere].flatten(), A_odd[sphere].flatten()
+    _B_even, _B_odd = B_even[sphere].flatten(), B_odd[sphere].flatten()
+
+    AA_sim = np.corrcoef(np.vstack((_A_even, _A_odd)))[0, 1]
+    BB_sim = np.corrcoef(np.vstack((_B_even, _B_odd)))[0, 1]
+    AB_sim = np.corrcoef(np.vstack((_A_even, _B_odd)))[0, 1]
+    BA_sim = np.corrcoef(np.vstack((_B_even, _A_odd)))[0, 1]
+
+    x0, y0, z0 = center
+    output_map[x0][y0][z0] = AA_sim + BB_sim - AB_sim - BA_sim
+
+
+######
+# MAIN
+######
+
+
+def mvpa(condition_A, condition_B, mask, radius=2, n_jobs=1):
     """
     Parameters
     ----------
@@ -46,9 +104,11 @@ def mvpa(condition_A, condition_B, mask, radius):
         boolean array with shape [x, y, z] giving locations of usable voxels
     radius : int
         radius of the searchlight sphere
+    n_jobs : int
+        number of CPUs to split the work up between (-1 means 'all CPUs')
 
-    Returns
-    -------
+    Return
+    ------
     significance_map : numpy.ndarray
         array of values indicating the significance of each voxel for
         condition A; same shape as the mask
@@ -60,52 +120,60 @@ def mvpa(condition_A, condition_B, mask, radius):
     A_even, A_odd = np.mean(A_even, axis=0), np.mean(A_odd, axis=0)
     B_even, B_odd = np.mean(B_even, axis=0), np.mean(B_odd, axis=0)
 
+    spheres = _extract_spheres(mask, radius)
     significance_map = np.zeros_like(mask, dtype=np.float64)
-    spheres = list(_extract_spheres(mask, radius))
-    for (x0, y0, z0), sphere in tqdm(spheres):
-        _A_even, _A_odd = A_even[sphere].flatten(), A_odd[sphere].flatten()
-        _B_even, _B_odd = B_even[sphere].flatten(), B_odd[sphere].flatten()
+    analyze_sphere = partial(
+        _analyze_sphere,
+        A=(A_even, A_odd),
+        B=(B_even, B_odd),
+        output_map=significance_map
+    )
 
-        AA_sim = np.corrcoef(np.vstack((_A_even, _A_odd)))[0, 1]
-        BB_sim = np.corrcoef(np.vstack((_B_even, _B_odd)))[0, 1]
-        AB_sim = np.corrcoef(np.vstack((_A_even, _B_odd)))[0, 1]
-        BA_sim = np.corrcoef(np.vstack((_B_even, _A_odd)))[0, 1]
-
-        significance_map[x0][y0][z0] = AA_sim + BB_sim - AB_sim - BA_sim
+    if n_jobs > 1 or n_jobs == -1:
+        concurrent_exec(analyze_sphere, spheres)
+    else:
+        num_spheres = np.prod([ub - (2 * radius) for ub in mask.shape])
+        for sphere in tqdm(spheres, total=num_spheres):
+            analyze_sphere(*sphere)
 
     return significance_map
 
 
 if __name__ == "__main__":
-    import os
     import pickle
+    from os import path
     from nilearn.image import get_data, concat_imgs, mean_img, new_img_like
     from nilearn.masking import compute_epi_mask
     from nilearn.plotting import view_img
 
     if True:
-        condition_A, condition_B = [], []
-        images = []
-        for filename in os.listdir("data"):
-            fmri_img = pickle.load(open(os.path.join("data", filename), "rb"))["nii"]
-            fmri_data = np.moveaxis(get_data(fmri_img), -1, 0)
+        print("\tLoading fMRI images")
+        fmri_images = [
+            pickle.load(open("data/159744_LR_2.pkl", "rb"))["nii"],
+            pickle.load(open("data/159744_RL_2.pkl", "rb"))["nii"],
+            pickle.load(open("data/159744_LR_4.pkl", "rb"))["nii"],
+            pickle.load(open("data/159744_RL_4.pkl", "rb"))["nii"]
+        ]
+        condition_A = [np.moveaxis(get_data(i), -1, 0) for i in fmri_images[:2]]
+        condition_B = [np.moveaxis(get_data(i), -1, 0) for i in fmri_images[2:]]
 
-            if "_2" in filename:
-                condition_A.append(fmri_data)
-            else:
-                condition_B.append(fmri_data)
+        print("\tComputing mask")
+        mask = compute_epi_mask(mean_img(concat_imgs(fmri_images)))
 
-            images.append(fmri_img)
+        print("\tRunning searchlight")
+        sig_map = mvpa(condition_A, condition_B, get_data(mask), radius=2, n_jobs=-1)
 
-        mask = compute_epi_mask(mean_img(concat_imgs(images)))
-        sig_map = mvpa(condition_A, condition_B, get_data(mask), radius=3)
-
+        print("\tPickling results")
         pickle.dump(mask, open("mask.pkl", "wb"))
         pickle.dump(sig_map, open("sig_map.pkl", "wb"))
     else:
+        print("\tLoading pickled mask")
         mask = pickle.load(open("mask.pkl", "rb"))
+
+        print("\tLoading pickled significance map")
         sig_map = pickle.load(open("sig_map.pkl", "rb"))
 
+    print("\tPlotting significance map")
     view_img(
         new_img_like(mask, sig_map),
         title="Significance Map",
@@ -113,4 +181,4 @@ if __name__ == "__main__":
         # cut_coords=[-9],
         # cmap="hot",
         black_bg=True
-    )
+    ).open_in_browser()
