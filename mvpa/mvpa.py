@@ -6,6 +6,7 @@ from math import atan
 
 # Third Party
 import numpy as np
+from scipy import stats
 from tqdm import tqdm
 
 
@@ -61,13 +62,16 @@ def _create_sphere(x0, y0, z0, radius):
 
 
 def _extract_spheres(mask, radius):
+    spheres = []
     centers = product(*[range(radius, ub - radius) for ub in mask.shape])
     for x0, y0, z0 in centers:
         # Skip spheres where the center is outside the brain
         if not mask[x0][y0][z0]:
             continue
 
-        yield (x0, y0, z0), _create_sphere(x0, y0, z0, radius)
+        spheres.append(((x0, y0, z0), _create_sphere(x0, y0, z0, radius)))
+
+    return spheres
 
 
 def _analyze_sphere(center, sphere, A, B, output_map):
@@ -91,7 +95,7 @@ def _analyze_sphere(center, sphere, A, B, output_map):
 ######
 
 
-def mvpa(condition_A, condition_B, mask, radius=2, n_jobs=1):
+def _within_subject_mvpa(condition_A, condition_B, spheres, mask):
     """
     Parameters
     ----------
@@ -103,10 +107,6 @@ def mvpa(condition_A, condition_B, mask, radius=2, n_jobs=1):
         subject's fMRI data for the second condition; same format as condition_A
     mask : numpy.ndarray
         boolean array with shape [x, y, z] giving locations of usable voxels
-    radius : int
-        radius of the searchlight sphere
-    n_jobs : int
-        number of CPUs to split the work up between (-1 means 'all CPUs')
 
     Return
     ------
@@ -121,7 +121,6 @@ def mvpa(condition_A, condition_B, mask, radius=2, n_jobs=1):
     A_even, A_odd = np.mean(A_even, axis=0), np.mean(A_odd, axis=0)
     B_even, B_odd = np.mean(B_even, axis=0), np.mean(B_odd, axis=0)
 
-    spheres = _extract_spheres(mask, radius)
     significance_map = np.zeros_like(mask, dtype=np.float64)
     analyze_sphere = partial(
         _analyze_sphere,
@@ -130,56 +129,148 @@ def mvpa(condition_A, condition_B, mask, radius=2, n_jobs=1):
         output_map=significance_map
     )
 
-    if n_jobs > 1 or n_jobs == -1:
-        concurrent_exec(analyze_sphere, spheres)
-    else:
-        num_spheres = np.prod([ub - (2 * radius) for ub in mask.shape])
-        for sphere in tqdm(spheres, total=num_spheres):
-            analyze_sphere(*sphere)
+    # if n_jobs > 1 or n_jobs == -1:
+    #     concurrent_exec(analyze_sphere, spheres, n_jobs)
+    # else:
+    #     for sphere in tqdm(spheres):
+    #         analyze_sphere(*sphere)
+    for sphere in tqdm(spheres):
+        analyze_sphere(*sphere)
 
     return significance_map
 
 
+def mvpa(A_set, B_set, mask, radius=2, n_jobs=1):
+    """
+    Parameters
+    ----------
+    A_set : list
+        list of subjects' fMRI data for the first condition (A); format for
+        each subject is a tuple, (even_trials, odd_trials), where each
+        element is a numpy array with shape [num_timesteps, x, y, z]
+    B_set : list
+        list of subjects' fMRI data for the second condition (B); same
+        format as A_set
+    mask : numpy.ndarray
+        boolean array with shape [x, y, z] giving locations of usable voxels
+    radius : int
+        radius of the searchlight sphere
+    n_jobs : int
+        number of CPUs to split the work up between (-1 means "all CPUs")
+
+    Return
+    ------
+    t_map : numpy.ndarray
+        array of t-statistic values indicating the significance of each voxel
+        for condition A; same shape as the mask
+    p_map : numpy.ndarray
+        array of p-values associated with the t-statistics in t_map
+    """
+
+    spheres = _extract_spheres(mask, radius)
+    within_subject_mvpa = partial(
+        _within_subject_mvpa,
+        spheres=spheres,
+        mask=mask
+    )
+
+    if n_jobs > 1 or n_jobs == -1:
+        sig_maps = concurrent_exec(
+            within_subject_mvpa,
+            zip(A_set, B_set),
+            n_jobs
+        )
+    else:
+        sig_maps = []
+        for condition_A, condition_B in zip(A_set, B_set):
+            sig_map = within_subject_mvpa(condition_A, condition_B)
+            sig_maps.append(sig_map)
+
+    sig_maps = np.concatenate([np.expand_dims(m, axis=3) for m in sig_maps], axis=-1)
+    t_map = np.zeros_like(mask, dtype=np.float64)
+    p_map = np.zeros_like(mask, dtype=np.float64)
+    for x in range(mask.shape[0]):
+        for y in range(mask.shape[1]):
+            for z in range(mask.shape[2]):
+                if not mask[x][y][z]:
+                    continue
+
+                # Significance values from each subject for one voxel
+                sample = sig_maps[x][y][z]
+                test = stats.ttest_1samp(sample, popmean=0.0)
+                t_map[x][y][z] = test.statistic
+                p_map[x][y][z] = test.pvalue
+
+    return t_map, p_map
+
+
 if __name__ == "__main__":
     import pickle
-    from os import path
+    import os
     from nilearn.image import get_data, concat_imgs, mean_img, new_img_like
     from nilearn.masking import compute_epi_mask
     from nilearn.plotting import view_img
 
+    DATA_DIR = "lf_4_subj"
+
     if True:
-        print("\tLoading fMRI images")
-        fmri_images = [
-            pickle.load(open("data/159744_LR_2.pkl", "rb"))["nii"],
-            pickle.load(open("data/159744_RL_2.pkl", "rb"))["nii"],
-            pickle.load(open("data/159744_LR_4.pkl", "rb"))["nii"],
-            pickle.load(open("data/159744_RL_4.pkl", "rb"))["nii"]
-        ]
-        condition_A = [np.moveaxis(get_data(i), -1, 0) for i in fmri_images[:2]]
-        condition_B = [np.moveaxis(get_data(i), -1, 0) for i in fmri_images[2:]]
+        all_fmri_imgs = []
+        A_set, B_set = [], []
+
+        print("\tLoad fMRI images")
+        for subject_id in os.listdir(DATA_DIR):
+            subject_dir = os.path.join(DATA_DIR, subject_id)
+            if not os.path.isdir(subject_dir):
+                continue
+
+            fmri_images = [
+                pickle.load(open(
+                    os.path.join(subject_dir, f"{subject_id}_LR_2.pkl"),
+                    "rb"
+                ))["nii"],
+                pickle.load(open(
+                    os.path.join(subject_dir, f"{subject_id}_RL_2.pkl"),
+                    "rb"
+                ))["nii"],
+                pickle.load(open(
+                    os.path.join(subject_dir, f"{subject_id}_LR_4.pkl"),
+                    "rb"
+                ))["nii"],
+                pickle.load(open(
+                    os.path.join(subject_dir, f"{subject_id}_RL_4.pkl"),
+                    "rb"
+                ))["nii"]
+            ]
+            condition_A = [np.moveaxis(get_data(i), -1, 0) for i in fmri_images[:2]]
+            condition_B = [np.moveaxis(get_data(i), -1, 0) for i in fmri_images[2:]]
+
+            A_set.append(condition_A)
+            B_set.append(condition_B)
+            all_fmri_imgs.extend(fmri_images)
 
         print("\tComputing mask")
-        mask = compute_epi_mask(mean_img(concat_imgs(fmri_images)))
+        mask = compute_epi_mask(mean_img(concat_imgs(all_fmri_imgs)))
 
         print("\tRunning searchlight")
-        sig_map = mvpa(condition_A, condition_B, get_data(mask), radius=2, n_jobs=1)
+        t_map, p_map = mvpa(A_set, B_set, get_data(mask), radius=2, n_jobs=1)
 
         print("\tPickling results")
         pickle.dump(mask, open("mask.pkl", "wb"))
-        pickle.dump(sig_map, open("sig_map.pkl", "wb"))
+        pickle.dump(t_map, open("t_map.pkl", "wb"))
+        pickle.dump(p_map, open("p_map.pkl", "wb"))
     else:
-        print("\tLoading pickled mask")
+        print("\tLoading pickled results")
         mask = pickle.load(open("mask.pkl", "rb"))
+        t_map = pickle.load(open("t_map.pkl", "rb"))
+        p_map = pickle.load(open("p_map.pkl", "rb"))
 
-        print("\tLoading pickled significance map")
-        sig_map = pickle.load(open("sig_map.pkl", "rb"))
+    # TODO: Filter t-values by p-values < 0.05
+    # t_map[np.argwhere(p_map > 0.05)] = 0.0
 
-    print("\tPlotting significance map")
+    print("\tPlotting t-map")
     view_img(
-        new_img_like(mask, sig_map),
-        title="Significance Map",
+        new_img_like(mask, t_map),
+        title="t-map",
         display_mode="z",
-        # cut_coords=[-9],
-        # cmap="hot",
         black_bg=True
     ).open_in_browser()
