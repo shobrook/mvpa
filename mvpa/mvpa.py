@@ -1,4 +1,6 @@
 # Standard Library
+from os import mkdir
+from os.path import expanduser, isdir, join
 from itertools import product
 from functools import partial
 from multiprocessing import Pool as ProcessPool
@@ -7,12 +9,14 @@ from math import atan
 # Third Party
 import numpy as np
 from scipy import stats
+from nilearn.image import get_data, load_img, new_img_like, mean_img, concat_imgs
+from nilearn.masking import compute_epi_mask
 from tqdm import tqdm
 
 
-###########
-# UTILITIES
-###########
+#########
+# HELPERS
+#########
 
 
 def concurrent_exec(func, iterable, n_processes=-1):
@@ -35,16 +39,11 @@ def concurrent_exec(func, iterable, n_processes=-1):
     """
 
     pool = ProcessPool(processes=None if n_processes == -1 else n_processes)
-    map_of_items = pool.starmap(func, iterable)
+    map_of_items = pool.map(func, iterable)
     pool.close()
     pool.join()
 
     return map_of_items
-
-
-#########
-# HELPERS
-#########
 
 
 def _create_sphere(x0, y0, z0, radius):
@@ -61,7 +60,7 @@ def _create_sphere(x0, y0, z0, radius):
     return np.ix_(*zip(*indices))
 
 
-def _extract_spheres(mask, radius):
+def _extract_spheres(mask, radius, interpolate):
     spheres = []
     centers = product(*[range(radius, ub - radius) for ub in mask.shape])
     for x0, y0, z0 in centers:
@@ -74,20 +73,15 @@ def _extract_spheres(mask, radius):
     return spheres
 
 
-def _analyze_sphere(center, sphere, A, B, output_map):
-    A_even, A_odd = A
-    B_even, B_odd = B
+def _filename(data_dir, subject_id):
+    if not data_dir:
+        home = expanduser("~")
+        data_dir = join(home, "mvpa")
+    if not is_dir(data_dir):
+        mkdir(data_dir)
 
-    _A_even, _A_odd = A_even[sphere].flatten(), A_odd[sphere].flatten()
-    _B_even, _B_odd = B_even[sphere].flatten(), B_odd[sphere].flatten()
-
-    AA_sim = atan(np.corrcoef(np.vstack((_A_even, _A_odd)))[0, 1])
-    BB_sim = atan(np.corrcoef(np.vstack((_B_even, _B_odd)))[0, 1])
-    AB_sim = atan(np.corrcoef(np.vstack((_A_even, _B_odd)))[0, 1])
-    BA_sim = atan(np.corrcoef(np.vstack((_B_even, _A_odd)))[0, 1])
-
-    x0, y0, z0 = center
-    output_map[x0][y0][z0] = AA_sim + BB_sim - AB_sim - BA_sim
+    filename = join(data_dir, f"{subject_id}_scores.nii")
+    return filename
 
 
 ######
@@ -95,68 +89,142 @@ def _analyze_sphere(center, sphere, A, B, output_map):
 ######
 
 
-def _within_subject_mvpa(condition_A, condition_B, spheres, mask):
+def analyze_subject(subject_data, spheres, interpolate, mask, data_dir=None):
     """
     Parameters
     ----------
-    condition_A : tuple
-        subject's fMRI data for the first condition; format is
-        (even_trials, odd_trials) tuple where each element is a numpy array
-        with shape [num_timesteps, x, y, z]
-    condition_B : tuple
-        subject's fMRI data for the second condition; same format as condition_A
+    subject_data : dict
+        TODO
+    spheres : list
+        TODO
+    interpolate : bool
+        whether or not to skip every other sphere (for speed) and interpolate
+        the results
     mask : numpy.ndarray
         boolean array with shape [x, y, z] giving locations of usable voxels
+    data_dir : string
+        path to directory of where to store MVPA results
 
     Return
     ------
-    significance_map : numpy.ndarray
+    scores : numpy.ndarray
         array of values indicating the significance of each voxel for
         condition A; same shape as the mask
     """
 
-    A_even, A_odd = condition_A
-    B_even, B_odd = condition_B
+    subject_id = subject_data["subject_id"]
+    A_even, A_odd = subject_data["A_even_trials"], subject_data["A_odd_trials"]
+    B_even, B_odd = subject_data["B_even_trials"], subject_data["B_odd_trials"]
 
-    A_even, A_odd = np.mean(A_even, axis=0), np.mean(A_odd, axis=0)
-    B_even, B_odd = np.mean(B_even, axis=0), np.mean(B_odd, axis=0)
+    if all(isinstance(img, str) for img in [A_even, A_odd, B_even, B_odd]):
+        A_even, A_odd = load_img(A_even), load_img(A_odd)
+        B_even, B_odd = load_img(B_even), load_img(B_odd)
 
-    significance_map = np.zeros_like(mask, dtype=np.float64)
-    analyze_sphere = partial(
-        _analyze_sphere,
-        A=(A_even, A_odd),
-        B=(B_even, B_odd),
-        output_map=significance_map
-    )
+    A_even = np.mean(np.moveaxis(get_data(A_even), -1, 0), axis=0)
+    A_odd = np.mean(np.moveaxis(get_data(A_odd), -1, 0), axis=0)
+    B_even = np.mean(np.moveaxis(get_data(B_even), -1, 0), axis=0)
+    B_odd = np.mean(np.moveaxis(get_data(B_odd), -1, 0), axis=0)
 
-    # if n_jobs > 1 or n_jobs == -1:
-    #     concurrent_exec(analyze_sphere, spheres, n_jobs)
-    # else:
-    #     for sphere in tqdm(spheres):
-    #         analyze_sphere(*sphere)
-    for sphere in tqdm(spheres):
-        analyze_sphere(*sphere)
+    _mask = get_data(mask)
+    scores = np.zeros_like(_mask, dtype=np.float64)
+    for (x0, y0, z0), sphere in tqdm(spheres):
+        _A_even, _A_odd = A_even[sphere].flatten(), A_odd[sphere].flatten()
+        _B_even, _B_odd = B_even[sphere].flatten(), B_odd[sphere].flatten()
 
-    return significance_map
+        AA_sim = atan(np.corrcoef(np.vstack((_A_even, _A_odd)))[0, 1])
+        BB_sim = atan(np.corrcoef(np.vstack((_B_even, _B_odd)))[0, 1])
+        AB_sim = atan(np.corrcoef(np.vstack((_A_even, _B_odd)))[0, 1])
+        BA_sim = atan(np.corrcoef(np.vstack((_B_even, _A_odd)))[0, 1])
+
+        scores[x0][y0][z0] = AA_sim + BB_sim - AB_sim - BA_sim
+
+    filename = _filename(data_dir, subject_id)
+    scores = new_img_like(mask, scores)
+    scores.to_filename(filename)
+
+    return filename
 
 
-def mvpa(A_set, B_set, mask, radius=2, n_jobs=1):
+def mvpa(dataset, mask=None, radius=2, interpolate=False, n_jobs=1, data_dir=None):
     """
     Parameters
     ----------
-    A_set : list
-        list of subjects' fMRI data for the first condition (A); format for
-        each subject is a tuple, (even_trials, odd_trials), where each
-        element is a numpy array with shape [num_timesteps, x, y, z]
-    B_set : list
-        list of subjects' fMRI data for the second condition (B); same
-        format as A_set
-    mask : numpy.ndarray
-        boolean array with shape [x, y, z] giving locations of usable voxels
+    dataset : list
+        list of subjects' fMRI data; each item in the list is a dictionary with
+        the format
+            {
+                "subject_id": "...",
+                "A_even_trials": "...",
+                "A_odd_trials": "...",
+                "B_even_trials": "...",
+                "B_odd_trials": "..."
+            }
+        where "A/B_even/odd_trials" holds a niimg or path (string) to a NIfTI
+        file representing the image data for the trials for that condition (A
+        or B)
+    mask : Niimg-like object
+        boolean image giving location of voxels containing usable signals
     radius : int
         radius of the searchlight sphere
+    interpolate : bool
+        whether or not to skip every other sphere (for speed) and interpolate
+        the results
     n_jobs : int
         number of CPUs to split the work up between (-1 means "all CPUs")
+    data_dir : string
+        path to directory to store MVPA results
+
+    Return
+    ------
+    score_map_fpaths : list
+        list of paths to NIfTI files representing the MVPA scores for each
+        subject
+    """
+
+    if not mask:
+        niimgs = []
+        for subject_data in dataset:
+            niimgs.extend([
+                subject_data["A_even_trials"],
+                subject_data["A_odd_trials"],
+                subject_data["B_even_trials"],
+                subject_data["B_odd_trials"]
+            ])
+        mask = compute_epi_mask(mean_img(concat_imgs(niimgs)))
+
+    spheres = _extract_spheres(get_data(mask), radius, interpolate)
+    _analyze_subject = partial(
+        analyze_subject,
+        spheres=spheres,
+        interpolate=interpolate,
+        mask=mask,
+        data_dir=data_dir
+    )
+
+    if n_jobs > 1 or n_jobs == -1:
+        score_map_fpaths = concurrent_exec(
+            _analyze_subject,
+            dataset,
+            n_jobs
+        )
+    else:
+        score_map_fpaths = []
+        for subject_data in dataset:
+            score_map_fpath = _analyze_subject(subject_data)
+            score_map_fpaths.append(score_map_fpath)
+
+    return score_map_fpaths
+
+
+def significance_map(subject_scores, mask):
+    """
+    Parameters
+    ----------
+    subject_scores : list
+        list of niimgs or paths to NIfTI files representing the MVPA scores for
+        each subject
+    mask : Niimg-like object
+        boolean image giving location of voxels containing usable signals
 
     Return
     ------
@@ -167,26 +235,17 @@ def mvpa(A_set, B_set, mask, radius=2, n_jobs=1):
         array of p-values associated with the t-statistics in t_map
     """
 
-    spheres = _extract_spheres(mask, radius)
-    within_subject_mvpa = partial(
-        _within_subject_mvpa,
-        spheres=spheres,
-        mask=mask
-    )
+    score_maps = []
+    for score_map in subject_scores:
+        if isinstance(score_map, str):
+            score_map = get_data(load_img(score_map))
+        else:
+            score_map = get_data(score_map)
 
-    if n_jobs > 1 or n_jobs == -1:
-        sig_maps = concurrent_exec(
-            within_subject_mvpa,
-            zip(A_set, B_set),
-            n_jobs
-        )
-    else:
-        sig_maps = []
-        for condition_A, condition_B in zip(A_set, B_set):
-            sig_map = within_subject_mvpa(condition_A, condition_B)
-            sig_maps.append(sig_map)
+        score_maps.append(np.expand_dims(score_map, axis=3))
 
-    sig_maps = np.concatenate([np.expand_dims(m, axis=3) for m in sig_maps], axis=-1)
+    mask = np.mean(score_maps, axis=0).astype(bool)
+    score_maps = np.concatenate(score_maps, axis=-1)
     t_map = np.zeros_like(mask, dtype=np.float64)
     p_map = np.zeros_like(mask, dtype=np.float64)
     for x in range(mask.shape[0]):
@@ -196,7 +255,7 @@ def mvpa(A_set, B_set, mask, radius=2, n_jobs=1):
                     continue
 
                 # Significance values from each subject for one voxel
-                sample = sig_maps[x][y][z]
+                sample = score_maps[x][y][z]
                 test = stats.ttest_1samp(sample, popmean=0.0)
                 t_map[x][y][z] = test.statistic
                 p_map[x][y][z] = test.pvalue
@@ -206,66 +265,58 @@ def mvpa(A_set, B_set, mask, radius=2, n_jobs=1):
 
 if __name__ == "__main__":
     import pickle
-    import os
-    from nilearn.image import get_data, concat_imgs, mean_img, new_img_like
-    from nilearn.masking import compute_epi_mask
-    from nilearn.plotting import view_img
+    from os import listdir
+    from os.path import isfile
+    from nilearn.plotting import view_img, plot_stat_map
 
     DATA_DIR = "lf_4_subj"
 
     if True:
-        all_fmri_imgs = []
-        A_set, B_set = [], []
-
-        print("\tLoad fMRI images")
-        for subject_id in os.listdir(DATA_DIR):
-            subject_dir = os.path.join(DATA_DIR, subject_id)
-            if not os.path.isdir(subject_dir):
+        print("\tLoading subject NIIMG file paths")
+        dataset = []
+        for subject_id in listdir(DATA_DIR):
+            subject_dir = join(DATA_DIR, subject_id)
+            if not isdir(subject_dir):
                 continue
 
-            fmri_images = [
-                pickle.load(open(
-                    os.path.join(subject_dir, f"{subject_id}_LR_2.pkl"),
-                    "rb"
-                ))["nii"],
-                pickle.load(open(
-                    os.path.join(subject_dir, f"{subject_id}_RL_2.pkl"),
-                    "rb"
-                ))["nii"],
-                pickle.load(open(
-                    os.path.join(subject_dir, f"{subject_id}_LR_4.pkl"),
-                    "rb"
-                ))["nii"],
-                pickle.load(open(
-                    os.path.join(subject_dir, f"{subject_id}_RL_4.pkl"),
-                    "rb"
-                ))["nii"]
-            ]
-            condition_A = [np.moveaxis(get_data(i), -1, 0) for i in fmri_images[:2]]
-            condition_B = [np.moveaxis(get_data(i), -1, 0) for i in fmri_images[2:]]
+            for filename in listdir(subject_dir):
+                if not filename.endswith(".pkl"):
+                    continue
 
-            A_set.append(condition_A)
-            B_set.append(condition_B)
-            all_fmri_imgs.extend(fmri_images)
+                niimg = pickle.load(open(join(subject_dir, filename), "rb"))["nii"]
+                niimg.to_filename(join(subject_dir, f"{filename[:-4]}.nii"))
 
-        print("\tComputing mask")
-        mask = compute_epi_mask(mean_img(concat_imgs(all_fmri_imgs)))
+            subject_data = {
+                "subject_id": subject_id,
+                "A_even_trials": join(subject_dir, f"{subject_id}_LR_2.nii"),
+                "A_odd_trials": join(subject_dir, f"{subject_id}_RL_2.nii"),
+                "B_even_trials": join(subject_dir, f"{subject_id}_LR_4.nii"),
+                "B_odd_trials": join(subject_dir, f"{subject_id}_RL_4.nii")
+            }
+            dataset.append(subject_data)
 
         print("\tRunning searchlight")
-        t_map, p_map = mvpa(A_set, B_set, get_data(mask), radius=2, n_jobs=1)
-
-        print("\tPickling results")
-        pickle.dump(mask, open("mask.pkl", "wb"))
-        pickle.dump(t_map, open("t_map.pkl", "wb"))
-        pickle.dump(p_map, open("p_map.pkl", "wb"))
+        score_maps = mvpa(dataset, radius=4, n_jobs=-1, data_dir="score_maps")
     else:
-        print("\tLoading pickled results")
-        mask = pickle.load(open("mask.pkl", "rb"))
-        t_map = pickle.load(open("t_map.pkl", "rb"))
-        p_map = pickle.load(open("p_map.pkl", "rb"))
+        print("\tLoading subject scores")
+        score_maps = [f for f in listdir(DATA_DIR) if isfile(join(DATA_DIR, f))]
+
+    print("\tCreating significance map (t-map, p-map)")
+    t_map, p_map = significance_map(score_maps)
 
     # TODO: Filter t-values by p-values < 0.05
     # t_map[np.argwhere(p_map > 0.05)] = 0.0
+    p_map[p_map > 0.05] = 0.0
+
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    plot_stat_map(
+        new_img_like(mask, p_map),
+        colorbar=True,
+        display_mode="z",
+        figure=fig
+    )
+    plt.show()
 
     print("\tPlotting t-map")
     view_img(
