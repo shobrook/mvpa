@@ -64,6 +64,8 @@ def _extract_spheres(mask, radius, interpolate):
     spheres = []
     centers = product(*[range(radius, ub - radius) for ub in mask.shape])
     for x0, y0, z0 in centers:
+        # TODO: If interpolate == true, skip every other center
+
         # Skip spheres where the center is outside the brain
         if not mask[x0][y0][z0]:
             continue
@@ -137,6 +139,12 @@ def analyze_subject(subject_data, spheres, interpolate, mask, data_dir=None):
         BA_sim = atan(np.corrcoef(np.vstack((_B_even, _A_odd)))[0, 1])
 
         scores[x0][y0][z0] = AA_sim + BB_sim - AB_sim - BA_sim
+
+        # TODO: Add value to interpolator
+
+    # TODO: Iterate through list of indices of nonzero elements in mask
+        # For each set of indices (x, y, z), check if scores[x][y][z] is zero
+            # If it is, use the interpolator to set its value
 
     filename = _filename(data_dir, subject_id)
     scores = new_img_like(mask, scores)
