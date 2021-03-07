@@ -9,6 +9,7 @@ from math import atan
 # Third Party
 import numpy as np
 from scipy import stats
+from scipy.interpolate import NearestNDInterpolator
 from nilearn.image import get_data, load_img, new_img_like, mean_img, concat_imgs
 from nilearn.masking import compute_epi_mask
 from tqdm import tqdm
@@ -61,11 +62,11 @@ def _create_sphere(x0, y0, z0, radius):
 
 
 def _extract_spheres(mask, radius, interpolate):
+    step = 2 if interpolate else 1
+    centers = np.transpose(np.nonzero(mask))
     spheres = []
-    centers = product(*[range(radius, ub - radius) for ub in mask.shape])
-    for x0, y0, z0 in centers:
-        # TODO: If interpolate == true, skip every other center
-
+    for center in centers[::step]:
+        x0, y0, z0 = center
         # Skip spheres where the center is outside the brain
         if not mask[x0][y0][z0]:
             continue
@@ -79,7 +80,7 @@ def _filename(data_dir, subject_id):
     if not data_dir:
         home = expanduser("~")
         data_dir = join(home, "mvpa")
-    if not is_dir(data_dir):
+    if not isdir(data_dir):
         mkdir(data_dir)
 
     filename = join(data_dir, f"{subject_id}_scores.nii")
@@ -129,6 +130,7 @@ def analyze_subject(subject_data, spheres, interpolate, mask, data_dir=None):
 
     _mask = get_data(mask)
     scores = np.zeros_like(_mask, dtype=np.float64)
+    X, y = [], []
     for (x0, y0, z0), sphere in tqdm(spheres):
         _A_even, _A_odd = A_even[sphere].flatten(), A_odd[sphere].flatten()
         _B_even, _B_odd = B_even[sphere].flatten(), B_odd[sphere].flatten()
@@ -140,11 +142,15 @@ def analyze_subject(subject_data, spheres, interpolate, mask, data_dir=None):
 
         scores[x0][y0][z0] = AA_sim + BB_sim - AB_sim - BA_sim
 
-        # TODO: Add value to interpolator
+        X.append(np.array([x0, y0, z0]))
+        y.append(scores[x0][y0][z0])
 
-    # TODO: Iterate through list of indices of nonzero elements in mask
-        # For each set of indices (x, y, z), check if scores[x][y][z] is zero
-            # If it is, use the interpolator to set its value
+    if interpolate:
+        interp = NearestNDInterpolator(np.vstack(X), y)
+        for indices in np.transpose(np.nonzero(_mask)):
+            x, y, z = indices
+            if not scores[x][y][z]:
+                scores[x][y][z] = interp(indices)
 
     filename = _filename(data_dir, subject_id)
     scores = new_img_like(mask, scores)
@@ -279,9 +285,9 @@ if __name__ == "__main__":
 
     DATA_DIR = "lf_4_subj"
 
-    if True:
+    if False:
         print("\tLoading subject NIIMG file paths")
-        dataset = []
+        dataset, niimgs = [], []
         for subject_id in listdir(DATA_DIR):
             subject_dir = join(DATA_DIR, subject_id)
             if not isdir(subject_dir):
@@ -302,15 +308,28 @@ if __name__ == "__main__":
                 "B_odd_trials": join(subject_dir, f"{subject_id}_RL_4.nii")
             }
             dataset.append(subject_data)
+            niimgs.extend([
+                subject_data["A_even_trials"],
+                subject_data["A_odd_trials"],
+                subject_data["B_even_trials"],
+                subject_data["B_odd_trials"]
+            ])
+
+        print("\tCreating mask")
+        mask = compute_epi_mask(mean_img(concat_imgs(niimgs)))
+        mask.to_filename("mask.nii")
 
         print("\tRunning searchlight")
-        score_maps = mvpa(dataset, radius=4, n_jobs=-1, data_dir="score_maps")
+        score_maps = mvpa(dataset, mask, radius=2, interpolate=True, n_jobs=1, data_dir="score_maps")
     else:
         print("\tLoading subject scores")
-        score_maps = [f for f in listdir(DATA_DIR) if isfile(join(DATA_DIR, f))]
+        score_maps = [join("score_maps", f) for f in listdir("score_maps") if isfile(join("score_maps", f))]
+
+        print("\tLoading mask")
+        mask = load_img("mask.nii")
 
     print("\tCreating significance map (t-map, p-map)")
-    t_map, p_map = significance_map(score_maps)
+    t_map, p_map = significance_map(score_maps, mask)
 
     # TODO: Filter t-values by p-values < 0.05
     # t_map[np.argwhere(p_map > 0.05)] = 0.0
