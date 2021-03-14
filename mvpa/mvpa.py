@@ -62,13 +62,18 @@ def _create_sphere(x0, y0, z0, radius):
 
 
 def _extract_spheres(mask, radius, interpolate):
+    is_out_of_bounds = lambda i, ub: i + radius >= ub or i - radius < 0
     step = 2 if interpolate else 1
     centers = np.transpose(np.nonzero(mask))
+
     spheres = []
     for center in centers[::step]:
         x0, y0, z0 = center
         # Skip spheres where the center is outside the brain
         if not mask[x0][y0][z0]:
+            continue
+
+        if any(is_out_of_bounds(i, ub) for i, ub in zip(center, mask.shape)):
             continue
 
         spheres.append(((x0, y0, z0), _create_sphere(x0, y0, z0, radius)))
@@ -278,67 +283,63 @@ def significance_map(subject_scores, mask):
 
 
 if __name__ == "__main__":
-    import pickle
-    from os import listdir
-    from os.path import isfile
-    from nilearn.plotting import view_img, plot_stat_map
+    import pandas as pd
+    from nilearn.datasets import fetch_haxby
+    from nilearn.image import new_img_like, load_img, get_data
 
-    DATA_DIR = "lf_4_subj"
+    # Fetch 2nd subject from dataset
+    haxby_dataset = fetch_haxby()
+    fmri_filename = haxby_dataset.func[0]
 
-    if False:
-        print("\tLoading subject NIIMG file paths")
-        dataset, niimgs = [], []
-        for subject_id in listdir(DATA_DIR):
-            subject_dir = join(DATA_DIR, subject_id)
-            if not isdir(subject_dir):
-                continue
+    labels = pd.read_csv(haxby_dataset.session_target[0], sep=" ")
+    y = labels["labels"]
+    session = labels["chunks"]
 
-            for filename in listdir(subject_dir):
-                if not filename.endswith(".pkl"):
-                    continue
+    from nilearn.image import index_img
 
-                niimg = pickle.load(open(join(subject_dir, filename), "rb"))["nii"]
-                niimg.to_filename(join(subject_dir, f"{filename[:-4]}.nii"))
+    # Condition masks
+    face_mask = y.isin(["face"])
+    house_mask = y.isin(["house"])
 
-            subject_data = {
-                "subject_id": subject_id,
-                "A_even_trials": join(subject_dir, f"{subject_id}_LR_2.nii"),
-                "A_odd_trials": join(subject_dir, f"{subject_id}_RL_2.nii"),
-                "B_even_trials": join(subject_dir, f"{subject_id}_LR_4.nii"),
-                "B_odd_trials": join(subject_dir, f"{subject_id}_RL_4.nii")
-            }
-            dataset.append(subject_data)
-            niimgs.extend([
-                subject_data["A_even_trials"],
-                subject_data["A_odd_trials"],
-                subject_data["B_even_trials"],
-                subject_data["B_odd_trials"]
-            ])
+    face_niimg = index_img(fmri_filename, face_mask)
+    house_niimg = index_img(fmri_filename, house_mask)
 
-        print("\tCreating mask")
-        mask = compute_epi_mask(mean_img(concat_imgs(niimgs)))
-        mask.to_filename("mask.nii")
+    face_niimg_even = index_img(face_niimg, range(0, face_niimg.shape[-1], 2))
+    face_niimg_odd = index_img(face_niimg, range(1, face_niimg.shape[-1], 2))
 
-        print("\tRunning searchlight")
-        score_maps = mvpa(dataset, mask, radius=2, interpolate=True, n_jobs=1, data_dir="score_maps")
-    else:
-        print("\tLoading subject scores")
-        score_maps = [join("score_maps", f) for f in listdir("score_maps") if isfile(join("score_maps", f))]
+    house_niimg_even = index_img(house_niimg, range(0, house_niimg.shape[-1], 2))
+    house_niimg_odd = index_img(house_niimg, range(0, house_niimg.shape[-1], 2))
 
-        print("\tLoading mask")
-        mask = load_img("mask.nii")
+    dataset = [
+      {
+        "subject_id": "2",
+        "A_even_trials": face_niimg_even,
+        "A_odd_trials": face_niimg_odd,
+        "B_even_trials": house_niimg_even,
+        "B_odd_trials": house_niimg_odd
+      }
+    ]
 
-    print("\tCreating significance map (t-map, p-map)")
-    t_map, p_map = significance_map(score_maps, mask)
+    mask_img = load_img(haxby_dataset.mask)
+
+    # score_maps = mvpa(dataset, mask_img, radius=3, interpolate=False, data_dir="score_maps")
+    score_maps = [join("score_maps", "2_scores.nii")]
+    # t_map, p_map = significance_map(score_maps, mask_img)
 
     # TODO: Filter t-values by p-values < 0.05
     # t_map[np.argwhere(p_map > 0.05)] = 0.0
-    p_map[p_map > 0.05] = 0.0
+    # p_map[p_map > 0.05] = 0.0
 
     import matplotlib.pyplot as plt
+    from nilearn.plotting import view_img, plot_stat_map
+
+    score_map = load_img(join("score_maps", "2_scores.nii"))
+    # score_map = load_img("social_task_checkerboard_mvpa_results/100206.nii")
     fig = plt.figure()
     plot_stat_map(
-        new_img_like(mask, p_map),
+        # new_img_like(mask_img, score_map),
+        score_map,
+        bg_img=mean_img(fmri_filename),
         colorbar=True,
         display_mode="z",
         figure=fig
@@ -346,9 +347,88 @@ if __name__ == "__main__":
     plt.show()
 
     print("\tPlotting t-map")
+    score_map.dtype = np.float64
     view_img(
-        new_img_like(mask, t_map),
-        title="t-map",
+        # new_img_like(mask_img, t_map),
+        # new_img_like(mean_img(fmri_filename), score_map),
+        score_map,
+        title="score map",
         display_mode="z",
         black_bg=True
     ).open_in_browser()
+
+# if __name__ == "__main__":
+#     import pickle
+#     from os import listdir
+#     from os.path import isfile
+#     from nilearn.plotting import view_img, plot_stat_map
+#
+#     DATA_DIR = "lf_4_subj"
+#
+#     if False:
+#         print("\tLoading subject NIIMG file paths")
+#         dataset, niimgs = [], []
+#         for subject_id in listdir(DATA_DIR):
+#             subject_dir = join(DATA_DIR, subject_id)
+#             if not isdir(subject_dir):
+#                 continue
+#
+#             for filename in listdir(subject_dir):
+#                 if not filename.endswith(".pkl"):
+#                     continue
+#
+#                 niimg = pickle.load(open(join(subject_dir, filename), "rb"))["nii"]
+#                 niimg.to_filename(join(subject_dir, f"{filename[:-4]}.nii"))
+#
+#             subject_data = {
+#                 "subject_id": subject_id,
+#                 "A_even_trials": join(subject_dir, f"{subject_id}_LR_2.nii"),
+#                 "A_odd_trials": join(subject_dir, f"{subject_id}_RL_2.nii"),
+#                 "B_even_trials": join(subject_dir, f"{subject_id}_LR_4.nii"),
+#                 "B_odd_trials": join(subject_dir, f"{subject_id}_RL_4.nii")
+#             }
+#             dataset.append(subject_data)
+#             niimgs.extend([
+#                 subject_data["A_even_trials"],
+#                 subject_data["A_odd_trials"],
+#                 subject_data["B_even_trials"],
+#                 subject_data["B_odd_trials"]
+#             ])
+#
+#         print("\tCreating mask")
+#         mask = compute_epi_mask(mean_img(concat_imgs(niimgs)))
+#         mask.to_filename("mask.nii")
+#
+#         print("\tRunning searchlight")
+#         score_maps = mvpa(dataset, mask, radius=2, interpolate=False, n_jobs=1, data_dir="score_maps")
+#     else:
+#         print("\tLoading subject scores")
+#         score_maps = [join("score_maps", f) for f in listdir("score_maps") if isfile(join("score_maps", f))]
+#
+#         print("\tLoading mask")
+#         mask = load_img("mask.nii")
+#
+#     # print("\tCreating significance map (t-map, p-map)")
+#     # t_map, p_map = significance_map(score_maps, mask)
+#
+#     # TODO: Filter t-values by p-values < 0.05
+#     # t_map[np.argwhere(p_map > 0.05)] = 0.0
+#     p_map[p_map > 0.05] = 0.0
+#
+#     import matplotlib.pyplot as plt
+#     fig = plt.figure()
+#     plot_stat_map(
+#         new_img_like(mask, p_map),
+#         colorbar=True,
+#         display_mode="z",
+#         figure=fig
+#     )
+#     plt.show()
+#
+#     print("\tPlotting t-map")
+#     view_img(
+#         new_img_like(mask, t_map),
+#         title="t-map",
+#         display_mode="z",
+#         black_bg=True
+#     ).open_in_browser()
