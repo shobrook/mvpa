@@ -6,7 +6,7 @@
   <img src="method.png" />
 </p>
 
-`mvpa` is far less computationally expensive than SVM-based searchlights and can produce similar results(?)
+Notably, this tool is less computationally expensive than a SVM-based searchlight.
 
 ## Installation
 
@@ -16,9 +16,7 @@
 $ pip install mvpa
 ```
 
-## Usage
-
-Let's consider an example using the Haxby dataset.
+## Usage Example
 
 ### Load the Haxby dataset
 
@@ -57,7 +55,6 @@ house_niimg_even, house_niimg_odd = even_odd_split(house_niimg)
 
 A = [(face_niimg_even, face_niimg_odd)]
 B = [(house_niimg_even, house_niimg_odd)]
-
 mask_img = load_img(haxby_dataset.mask)
 ```
 
@@ -70,6 +67,8 @@ score_maps = correlation_searchlight(A, B, mask_img, radius=3)
 # t_map, p_map = significance_map(score_maps, mask_img) # Only used for datasets
                                                         # with multiple subjects
 ```
+
+`score_maps` is a list of paths to NIfTI files, each representing the significance scores for each voxel in a subject's scan.
 
 ### Visualize results
 
