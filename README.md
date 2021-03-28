@@ -73,10 +73,12 @@ score_maps = correlation_searchlight(A, B, mask_img, radius=3)
 ### Visualize results
 
 ```python
+from nilearn.image import mean_img
 from nilearn.plotting import plot_stat_map
 
 score_map = load_img(score_maps[0])
-plot_stat_map(score_map, bg_img=mean_img())
+plot_stat_map(score_map, bg_img=mean_img(fmri_filename), colorbar=True,
+              display_mode="z")
 ```
 
 <img src="demo.png" />
