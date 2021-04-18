@@ -1,6 +1,6 @@
 # Standard Library
 from functools import partial
-from math import atan
+from math import atanh
 
 # Third Party
 import numpy as np
@@ -66,10 +66,10 @@ def analyze_subject(subject_id, A, B, spheres, interpolate, mask, data_dir=None)
         _A_even, _A_odd = A_even[sphere].flatten(), A_odd[sphere].flatten()
         _B_even, _B_odd = B_even[sphere].flatten(), B_odd[sphere].flatten()
 
-        AA_sim = atan(np.corrcoef(np.vstack((_A_even, _A_odd)))[0, 1])
-        BB_sim = atan(np.corrcoef(np.vstack((_B_even, _B_odd)))[0, 1])
-        AB_sim = atan(np.corrcoef(np.vstack((_A_even, _B_odd)))[0, 1])
-        BA_sim = atan(np.corrcoef(np.vstack((_B_even, _A_odd)))[0, 1])
+        AA_sim = atanh(np.corrcoef(np.vstack((_A_even, _A_odd)))[0, 1])
+        BB_sim = atanh(np.corrcoef(np.vstack((_B_even, _B_odd)))[0, 1])
+        AB_sim = atanh(np.corrcoef(np.vstack((_A_even, _B_odd)))[0, 1])
+        BA_sim = atanh(np.corrcoef(np.vstack((_B_even, _A_odd)))[0, 1])
 
         scores[x0][y0][z0] = AA_sim + BB_sim - AB_sim - BA_sim
 
