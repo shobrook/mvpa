@@ -50,7 +50,7 @@ house_niimg = index_img(fmri_filename, house_mask)
 
 ```python
 from nilearn.image import load_img
-from corrmvpa import even_odd_split
+from mvpa import even_odd_split
 
 face_niimg_even, face_niimg_odd = even_odd_split(face_niimg)
 house_niimg_even, house_niimg_odd = even_odd_split(house_niimg)
