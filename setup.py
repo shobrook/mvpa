@@ -18,13 +18,13 @@ setup(
     long_description=readme,
     long_description_content_type="text/markdown",
     version="v1.0.0",
-    packages=["mvpa"],
+    packages=["corrmvpa"],
     python_requires=">=3",
     url="https://github.com/shobrook/mvpa",
     author="shobrook",
     author_email="shobrookj@gmail.com",
     # classifiers=[],
     install_requires=["nilearn", "numpy", "tqdm", "scipy"],
-    keywords=["mvpa", "fmri", "correlation"],
+    keywords=["mvpa", "fmri", "correlation", "searchlight"],
     license="MIT"
 )

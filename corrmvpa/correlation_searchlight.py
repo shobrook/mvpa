@@ -11,7 +11,7 @@ from nilearn.masking import compute_epi_mask
 from tqdm import tqdm
 
 # Local Modules
-from mvpa.utilities import extract_spheres, concurrent_exec, score_map_filename
+from corrmvpa.utilities import extract_spheres, concurrent_exec, score_map_filename
 
 
 ######
