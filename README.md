@@ -1,8 +1,8 @@
-# mvpa
+# CorrMVPA
 
-`mvpa` is a multi-voxel pattern analysis (MVPA) tool for fMRI data. It allows users to identify areas of the brain containing multivariate representations, from which a pair of conditions can be decoded. This is similar to the set of [searchlight tools](https://nilearn.github.io/modules/reference.html#module-nilearn.decoding) provided by nilearn, but it is based on voxel-by-voxel correlations rather than SVM classification. Such correlations are notably much faster to compute, and results for a full brain can be generated within 10 minutes on a laptop, unlike the day(s) needed for the SVM searchlight.
+`CorrMVPA` is a multi-voxel pattern analysis (MVPA) tool for fMRI data. It's adapted from the method described in _[Haxby et al., 2001](https://science.sciencemag.org/content/293/5539/2425)_, except searchlight spheres are analyzed instead of anatomical ROIs.
 
-This tool is adapted from the method described in _[Haxby et al., 2001](https://science.sciencemag.org/content/293/5539/2425)_, except searchlight spheres are analyzed instead of anatomical ROIs.
+This tool allows users to identify areas of the brain containing multivariate representations, from which a pair of conditions can be decoded. `CorrMVPA` is similar to the [searchlight tool](https://nilearn.github.io/modules/reference.html#module-nilearn.decoding) provided by [nilearn](https://nilearn.github.io/stable/index.html), but it's based on voxel-by-voxel correlations rather than SVM classifications. Such correlations are notably much faster to compute, and results for a full brain can be generated within 10 minutes on a commercial laptop, unlike the day(s) needed for the SVM searchlight.
 
 <p align="center">
   <img src="method.png" />
