@@ -84,3 +84,7 @@ plot_stat_map(score_map, bg_img=mean_img(fmri_filename), colorbar=True,
 ```
 
 <img src="demo.png" />
+
+# Authors
+
+`CorrMVPA` was created by Jonathan Shobrook and [Paul C. Bogdan](https://github.com/paulcbogdan/) as part of our research in the [Dolcos Lab](https://dolcoslab.beckman.illinois.edu/) at the Beckman Institute for Advanced Science and Technology.
